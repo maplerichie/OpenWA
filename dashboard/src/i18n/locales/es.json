@@ -597,6 +597,7 @@
       "sslDesc": "Habilitar TLS/SSL para conexiones seguras a la base de datos",
       "sslRejectUnauthorized": "Verificar certificado SSL",
       "sslRejectUnauthorizedDesc": "Rechazar certificados autofirmados o no válidos. Desactívalo para Postgres gestionado con certificados autofirmados (Supabase, Heroku, Render, Railway).",
+      "passwordSetHint": "Hay una contraseña guardada — deja el campo vacío para conservarla.",
       "migrationsTitle": "Migraciones de la base de datos",
       "migrationsStatus": "El esquema se sincroniza automáticamente con TypeORM",
       "migrationsHint": "Las migraciones se gestionan automáticamente. Usa la CLI para migraciones manuales."

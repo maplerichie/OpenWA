@@ -28,7 +28,25 @@ interface InfraStatus {
   // `builtIn` reflects whether OpenWA's own bundled container is actually running and backing this
   // service (detected live from the labeled container), not merely the saved intent. Falls back to the
   // saved flag when Docker is unavailable. (#488)
-  database: { connected: boolean; type: string; host: string; builtIn: boolean };
+  //
+  // Non-secret connection detail is surfaced from the RUNNING process env (via ConfigService) so the
+  // dashboard form hydrates from what's actually in effect. data/.env.generated may be an empty
+  // first-run seed while a host/.env value pins the real connection — reading the saved file for these
+  // showed stale defaults (schema/username/SSL) for an env-configured external Postgres. The password is
+  // never surfaced here; getConfig's `passwordSet` flag covers it. (#488)
+  database: {
+    connected: boolean;
+    type: string;
+    host: string;
+    builtIn: boolean;
+    port: string;
+    username: string;
+    database: string;
+    schema: string;
+    poolSize: number;
+    sslEnabled: boolean;
+    sslRejectUnauthorized: boolean;
+  };
   redis: { enabled: boolean; connected: boolean; host: string; port: number; builtIn: boolean };
   queue: {
     enabled: boolean;
@@ -260,6 +278,17 @@ export class InfraController {
     const dbConnected = mainDbConnected && dataDbConnected;
     const dbType = this.configService.get<string>('dataDatabase.type', 'sqlite');
     const dbHost = this.configService.get<string>('dataDatabase.host', 'localhost');
+    // Non-secret connection detail is read from the running env (ConfigService) so /status reports
+    // what's actually in effect — a host/.env value pins the real connection over data/.env.generated,
+    // which may be an empty first-run seed. The password is intentionally NOT surfaced here; getConfig's
+    // `passwordSet` indicator is the dedicated channel for that. (#488)
+    const dbPort = String(this.configService.get<number>('dataDatabase.port') ?? 5432);
+    const dbUsername = this.configService.get<string>('dataDatabase.username') ?? '';
+    const dbName = this.configService.get<string>('dataDatabase.name') ?? 'openwa';
+    const dbSchema = this.configService.get<string>('dataDatabase.schema') ?? 'public';
+    const dbPoolSize = this.configService.get<number>('dataDatabase.poolSize') ?? 10;
+    const dbSslEnabled = this.configService.get<boolean>('dataDatabase.ssl') ?? false;
+    const dbSslRejectUnauthorized = this.configService.get<boolean>('dataDatabase.sslRejectUnauthorized') ?? true;
 
     const redisHost = process.env.REDIS_HOST || this.configService.get<string>('redis.host', 'localhost');
     const redisPort = parseInt(process.env.REDIS_PORT || '', 10) || this.configService.get<number>('redis.port', 6379);
@@ -333,7 +362,19 @@ export class InfraController {
     }
 
     return {
-      database: { connected: dbConnected, type: dbType, host: dbHost, builtIn: dbBuiltIn },
+      database: {
+        connected: dbConnected,
+        type: dbType,
+        host: dbHost,
+        builtIn: dbBuiltIn,
+        port: dbPort,
+        username: dbUsername,
+        database: dbName,
+        schema: dbSchema,
+        poolSize: dbPoolSize,
+        sslEnabled: dbSslEnabled,
+        sslRejectUnauthorized: dbSslRejectUnauthorized,
+      },
       redis: {
         enabled: redisEnabled,
         connected: redisConnected,

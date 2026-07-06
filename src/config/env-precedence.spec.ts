@@ -91,6 +91,11 @@ describe('blank-shadowed env keys (compose ${VAR:-} forwards the dashboard manag
       'DATABASE_PORT',
       'DATABASE_USERNAME',
       'DATABASE_NAME',
+      // PostgreSQL schema + SSL flags are dashboard-managed and blank-forwarded by compose, so a blank
+      // forward must clear (letting .env.generated win) just like the other DATABASE_* keys (#488).
+      'POSTGRES_SCHEMA',
+      'DATABASE_SSL',
+      'DATABASE_SSL_REJECT_UNAUTHORIZED',
       'STORAGE_TYPE',
       'STORAGE_LOCAL_PATH',
       'S3_BUCKET',

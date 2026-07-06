@@ -3675,13 +3675,17 @@ Aggregate infrastructure status (database, Redis, queue, storage, engine).
 
 ```json
 {
-  "database": { "connected": true, "type": "sqlite", "host": "" },
-  "redis": { "enabled": false, "connected": false, "host": "localhost", "port": 6379 },
+  "database": {
+    "connected": true, "type": "postgres", "host": "db.internal", "builtIn": false,
+    "port": "5432", "username": "openwa", "database": "openwa", "schema": "public",
+    "poolSize": 10, "sslEnabled": false, "sslRejectUnauthorized": true
+  },
+  "redis": { "enabled": false, "connected": false, "host": "localhost", "port": 6379, "builtIn": false },
   "queue": {
     "enabled": false,
     "webhooks": { "pending": 0, "completed": 0, "failed": 0 }
   },
-  "storage": { "type": "local", "path": "./data/media" },
+  "storage": { "type": "local", "path": "./data/media", "builtIn": false },
   "engine": {
     "type": "whatsapp-web.js",
     "headless": true,
@@ -3691,7 +3695,7 @@ Aggregate infrastructure status (database, Redis, queue, storage, engine).
 }
 ```
 
-The `queue.webhooks` counters are live BullMQ job counts (`pending` = waiting + active + delayed; plus `completed`/`failed`), degrading to zeros when the queue is disabled or Redis is unreachable. `redis.connected` is a live probe. `storage` only ever returns `type`+`path` here (no `bucket`).
+The `queue.webhooks` counters are live BullMQ job counts (`pending` = waiting + active + delayed; plus `completed`/`failed`), degrading to zeros when the queue is disabled or Redis is unreachable. `redis.connected` is a live probe. `database` non-secret connection detail (`port`, `username`, `database`, `schema`, `poolSize`, `sslEnabled`, `sslRejectUnauthorized`) is read from the running env (via `ConfigService`), not `data/.env.generated`, so the dashboard form hydrates from what's actually in effect; the password is never returned (use `GET /api/infra/config`'s `database.passwordSet`). `storage` may also include `bucket` (S3), `builtIn`, and `s3Available`.
 
 **Errors:** `401` missing/invalid key · `403` key role < ADMIN
 

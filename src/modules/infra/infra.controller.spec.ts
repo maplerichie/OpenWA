@@ -136,6 +136,69 @@ describe('InfraController.getStatus queue job counts (F-18)', () => {
   });
 });
 
+describe('InfraController.getStatus surfaces running DB connection detail (#488)', () => {
+  function buildController(configService: { get: jest.Mock }) {
+    const dataSource = { isInitialized: true } as unknown;
+    const engineFactory = { create: jest.fn() };
+    const dockerService = { isDockerAvailable: () => false, getRunningBuiltinServices: jest.fn() };
+    const cacheService = { isAvailable: jest.fn().mockResolvedValue(false), refreshS3Availability: jest.fn() };
+    const storageService = { refreshS3Availability: jest.fn() };
+    const shutdownService = {};
+    return new InfraController(
+      configService as never,
+      dataSource as never,
+      dataSource as never,
+      engineFactory as never,
+      dockerService as never,
+      cacheService as never,
+      storageService as never,
+      shutdownService as never,
+      undefined as never,
+    );
+  }
+
+  it('reads port/username/database/schema/poolSize/SSL from the running env (ConfigService)', async () => {
+    const map: Record<string, unknown> = {
+      'dataDatabase.type': 'postgres',
+      'dataDatabase.host': 'db.internal',
+      'dataDatabase.port': 6543,
+      'dataDatabase.username': 'appuser',
+      'dataDatabase.name': 'appdb',
+      'dataDatabase.schema': 'appschema',
+      'dataDatabase.poolSize': 20,
+      'dataDatabase.ssl': true,
+      'dataDatabase.sslRejectUnauthorized': false,
+    };
+    const configService = { get: jest.fn((key: string, def?: unknown) => (key in map ? map[key] : def)) };
+    const status = await buildController(configService).getStatus();
+    // The form must hydrate from the running env, not data/.env.generated — so an env-configured
+    // external Postgres shows its real schema/username/SSL instead of the saved-file defaults.
+    expect(status.database).toMatchObject({
+      type: 'postgres',
+      host: 'db.internal',
+      port: '6543',
+      username: 'appuser',
+      database: 'appdb',
+      schema: 'appschema',
+      poolSize: 20,
+      sslEnabled: true,
+      sslRejectUnauthorized: false,
+    });
+  });
+
+  it('coerces unset detail to safe defaults (port 5432, schema public, SSL off, reject true)', async () => {
+    const configService = { get: jest.fn((_key: string, def?: unknown) => def) };
+    const status = await buildController(configService).getStatus();
+    expect(status.database.port).toBe('5432');
+    expect(status.database.schema).toBe('public');
+    expect(status.database.database).toBe('openwa');
+    expect(status.database.poolSize).toBe(10);
+    expect(status.database.sslEnabled).toBe(false);
+    expect(status.database.sslRejectUnauthorized).toBe(true);
+    expect(status.database.username).toBe('');
+  });
+});
+
 describe('InfraController.saveConfig SSL reject-unauthorized', () => {
   function writtenEnv(config: unknown): string {
     const spy = jest.spyOn(fs, 'writeFileSync').mockImplementation(() => undefined);

@@ -210,7 +210,24 @@ export interface HealthStatus {
 export interface InfraStatus {
   // `builtIn` = OpenWA's own bundled container is actually running and backing this service (live),
   // not just the saved intent — falls back to the saved flag when Docker is unavailable. (#488)
-  database: { connected: boolean; type: string; host: string; builtIn: boolean };
+  //
+  // Non-secret connection detail is read from the RUNNING env so the form hydrates from what's in
+  // effect, not from data/.env.generated (which may be an empty first-run seed for an env-configured
+  // external Postgres). The password is never surfaced; SavedConfig.database.passwordSet covers it.
+  // (#488)
+  database: {
+    connected: boolean;
+    type: string;
+    host: string;
+    builtIn: boolean;
+    port: string;
+    username: string;
+    database: string;
+    schema: string;
+    poolSize: number;
+    sslEnabled: boolean;
+    sslRejectUnauthorized: boolean;
+  };
   redis: { enabled: boolean; connected: boolean; host: string; port: number; builtIn: boolean };
   queue: {
     enabled: boolean;

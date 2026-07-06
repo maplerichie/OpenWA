@@ -38,6 +38,9 @@ interface DatabaseConfig {
   port: string;
   username: string;
   password: string;
+  // Whether a password is stored in data/.env.generated (the secret itself is never returned).
+  // Surfaced so the password input can show a "set" indicator instead of always looking empty.
+  passwordSet: boolean;
   database: string;
   schema: string;
   poolSize: number;
@@ -98,6 +101,7 @@ export function Infrastructure() {
     port: '5432',
     username: 'postgres',
     password: '',
+    passwordSet: false,
     database: 'openwa',
     schema: 'public',
     poolSize: 10,
@@ -172,6 +176,16 @@ export function Infrastructure() {
       host: infraStatus.database.host || 'localhost',
       // builtIn reflects whether OpenWA's bundled container is actually running (live), not saved intent.
       builtIn: infraStatus.database.builtIn,
+      // Non-secret detail comes from the RUNNING env (/status), not the saved file (/config): a host
+      // or .env value pins the real connection while data/.env.generated may be an empty first-run
+      // seed, so reading the saved file here showed stale defaults (schema/username/SSL). (#488)
+      port: infraStatus.database.port || prev.port,
+      username: infraStatus.database.username ?? prev.username,
+      database: infraStatus.database.database || prev.database,
+      schema: infraStatus.database.schema || prev.schema,
+      poolSize: infraStatus.database.poolSize,
+      sslEnabled: infraStatus.database.sslEnabled,
+      sslRejectUnauthorized: infraStatus.database.sslRejectUnauthorized,
     }));
     setRedisConfig(prev => ({
       ...prev,
@@ -198,17 +212,11 @@ export function Infrastructure() {
     if (!savedConfig || formHydrated.current) return;
     // NOTE: builtIn for db/redis/storage is owned by the live /status effect above (it reflects the
     // actually-running bundled container), so it is intentionally NOT set here from saved intent.
-    setDbConfig(prev => ({
-      ...prev,
-      host: savedConfig.database.host || prev.host,
-      port: savedConfig.database.port || prev.port,
-      username: savedConfig.database.username || prev.username,
-      database: savedConfig.database.database || prev.database,
-      schema: savedConfig.database.schema || prev.schema,
-      poolSize: savedConfig.database.poolSize,
-      sslEnabled: savedConfig.database.sslEnabled,
-      sslRejectUnauthorized: savedConfig.database.sslRejectUnauthorized,
-    }));
+    // DB connection detail (host/port/username/database/schema/poolSize/SSL) is ALSO owned by the live
+    // /status effect — it reads the running env, not this saved file (which may be an empty first-run
+    // seed for an env-configured external Postgres). Here we only surface whether a password is stored,
+    // so the password input can show a "set" indicator — the secret itself is never returned. (#488)
+    setDbConfig(prev => ({ ...prev, passwordSet: savedConfig.database.passwordSet }));
     setRedisConfig(prev => ({
       ...prev,
       host: savedConfig.redis.host || prev.host,
@@ -445,11 +453,27 @@ export function Infrastructure() {
     setTimeout(check, 3000);
   };
 
-  // A setting whose RUNNING value (/status) differs from the SAVED file (/config) is being pinned by a
-  // host/.env environment variable, which wins at runtime — so a dashboard change to it won't apply
+  // A setting whose RUNNING value (/status, from the live env) differs from the SAVED file (/config)
+  // is pinned by a host/.env variable, which wins at runtime — so a dashboard change to it won't apply
   // until that variable is unset. Surface that honestly instead of letting the control look effective.
+  // For the DB section this is the type, OR — in postgres mode — any non-secret connection detail: an
+  // env-configured external Postgres with an empty .env.generated seed pins every detail field
+  // (host/port/username/database/schema/poolSize/SSL), not just the type. SQLite only compares the type,
+  // since the detail fields aren't shown/selectable in sqlite mode. (#488)
   const dbPinnedByEnv =
-    !savePending && !!infraStatus && !!savedConfig && infraStatus.database.type !== savedConfig.database.type;
+    !savePending &&
+    !!infraStatus &&
+    !!savedConfig &&
+    (infraStatus.database.type !== savedConfig.database.type ||
+      (infraStatus.database.type === 'postgres' &&
+        (infraStatus.database.host !== savedConfig.database.host ||
+          infraStatus.database.port !== (savedConfig.database.port || '') ||
+          infraStatus.database.username !== (savedConfig.database.username || '') ||
+          infraStatus.database.database !== (savedConfig.database.database || '') ||
+          infraStatus.database.schema !== (savedConfig.database.schema || 'public') ||
+          infraStatus.database.poolSize !== savedConfig.database.poolSize ||
+          infraStatus.database.sslEnabled !== savedConfig.database.sslEnabled ||
+          infraStatus.database.sslRejectUnauthorized !== savedConfig.database.sslRejectUnauthorized)));
   const redisPinnedByEnv =
     !savePending && !!infraStatus && !!savedConfig && infraStatus.redis.enabled !== savedConfig.redis.enabled;
   const storagePinnedByEnv =
@@ -549,6 +573,9 @@ export function Infrastructure() {
                         value={dbConfig.password}
                         onChange={e => updateDbConfig('password', e.target.value)}
                       />
+                      {dbConfig.passwordSet && !dbConfig.password && (
+                        <small>{t('infrastructure.database.passwordSetHint')}</small>
+                      )}
                     </div>
                   </div>
                   <div className="form-row">
