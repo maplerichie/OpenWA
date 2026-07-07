@@ -209,6 +209,10 @@ export interface PluginIngressRoute {
   // ordering key (P1). Absent => the P1 lock falls back to per-instance serialization. The host never
   // needs to understand the provider's schema beyond this one pointer.
   conversationId?: { header?: string; jsonPointer?: string };
+  // Optional: the acknowledgment response format for async mode. The plugin declares what the provider
+  // expects (status, body, headers). Absent => defaults to 204 No Content. This fixes provider rejections
+  // due to incorrect content-type (previously hardcoded 202 text/html).
+  ackResponse?: { status: number; body?: string; headers?: Record<string, string> };
 }
 
 // Normalized outbound envelope for ctx.conversations.send (POJO across the wire).

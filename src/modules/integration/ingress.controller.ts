@@ -55,6 +55,13 @@ export class IngressController {
       query,
       rawBody,
     });
-    res.status(result.status).send(result.body ?? '');
+    if (result.headers) {
+      Object.entries(result.headers).forEach(([k, v]) => res.setHeader(k, v));
+    }
+    if (result.status === 204 || result.body === undefined) {
+      res.status(result.status).end();
+    } else {
+      res.status(result.status).send(result.body);
+    }
   }
 }

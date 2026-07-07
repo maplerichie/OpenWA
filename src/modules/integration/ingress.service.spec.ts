@@ -39,13 +39,36 @@ describe('IngressService.handle', () => {
     rawBody: '{}',
   };
 
-  it('verifies, persists, enqueues, and fast-acks 202', async () => {
+  it('verifies, persists, enqueues, and fast-acks 202 (default)', async () => {
     const d = deps();
     const svc = new IngressService(d);
     const res = await svc.handle(req);
     expect(d.events.recordOrSkip).toHaveBeenCalled();
     expect(d.enqueue).toHaveBeenCalledWith(expect.objectContaining({ deliveryId: 'd1' }), 'd1');
     expect(res.status).toBe(202);
+    expect(res.body).toBe('accepted');
+    expect(res.headers).toBeUndefined();
+  });
+
+  it('uses plugin-declared ackResponse when present', async () => {
+    const d = deps({
+      manifestRoute: jest.fn().mockReturnValue({
+        route: 'chatwoot',
+        mode: 'async',
+        verify: 'core',
+        maxBodyBytes: 1024,
+        signature: { scheme: 'none' },
+        dedupHeader: 'x-delivery',
+        ackResponse: { status: 200, body: '{"received":true}', headers: { 'content-type': 'application/json' } },
+      }),
+    });
+    const svc = new IngressService(d);
+    const res = await svc.handle(req);
+    expect(d.events.recordOrSkip).toHaveBeenCalled();
+    expect(d.enqueue).toHaveBeenCalledWith(expect.objectContaining({ deliveryId: 'd1' }), 'd1');
+    expect(res.status).toBe(200);
+    expect(res.body).toBe('{"received":true}');
+    expect(res.headers).toEqual({ 'content-type': 'application/json' });
   });
 
   it('short-circuits a duplicate delivery with 200 and no enqueue', async () => {

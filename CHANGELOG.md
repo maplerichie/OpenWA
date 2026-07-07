@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Plugin-declared ingress acknowledgment.** Plugins can now declare the acknowledgment response format (status, body, headers) via `ingress[].ackResponse` in their manifest. This fixes provider rejections due to incorrect content-type in async mode (previously hardcoded 202 text/html). Default is 202 Accepted with body 'accepted' for backward compatibility; plugins can override to 204 or custom formats.
+
 ## [0.8.10] - 2026-07-07
 
 ### Added

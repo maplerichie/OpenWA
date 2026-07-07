@@ -54,12 +54,12 @@ export interface IngressDeps {
 export class IngressService {
   constructor(private readonly deps: IngressDeps) {}
 
-  async handle(req: IngressRequest): Promise<{ status: number; body?: string }> {
+  async handle(req: IngressRequest): Promise<{ status: number; body?: string; headers?: Record<string, string> }> {
     const instance = await this.deps.instances.resolve(req.pluginId, req.instanceId);
-    if (!instance || !instance.enabled) return { status: 404, body: 'unknown instance' };
+    if (!instance || !instance.enabled) return { status: 404, body: 'unknown instance', headers: undefined };
 
     const route = this.deps.manifestRoute(req.pluginId, req.route);
-    if (!route) return { status: 404, body: 'unknown route' };
+    if (!route) return { status: 404, body: 'unknown route', headers: undefined };
 
     // GET challenge handshake (e.g. Meta hub.challenge), answered host-side without the worker. The
     // token is compared against the instance's minted verifyToken.
@@ -68,12 +68,13 @@ export class IngressService {
       const echo = req.query[route.challenge.echoParam];
       // Constant-time compare (mirrors the signature path) so the verify token can't be probed by timing.
       if (token && instance.verifyToken && safeEqualStr(token, instance.verifyToken)) {
-        return { status: 200, body: echo ?? '' };
+        return { status: 200, body: echo ?? '', headers: undefined };
       }
-      return { status: 403, body: 'challenge failed' };
+      return { status: 403, body: 'challenge failed', headers: undefined };
     }
 
-    if (Buffer.byteLength(req.rawBody, 'utf8') > route.maxBodyBytes) return { status: 413, body: 'payload too large' };
+    if (Buffer.byteLength(req.rawBody, 'utf8') > route.maxBodyBytes)
+      return { status: 413, body: 'payload too large', headers: undefined };
 
     const verdict = verifyIngressSignature(route.signature, {
       rawBody: req.rawBody,
@@ -81,7 +82,8 @@ export class IngressService {
       secret: instance.secret,
       now: this.deps.now(),
     });
-    if (!verdict.ok) return { status: 401, body: verdict.reason ?? 'signature verification failed' };
+    if (!verdict.ok)
+      return { status: 401, body: verdict.reason ?? 'signature verification failed', headers: undefined };
 
     const dedupHeader = (route.dedupHeader ?? route.signature.dedupHeader ?? 'x-delivery').toLowerCase();
     const deliveryId = req.headers[dedupHeader] ?? deriveDeliveryId(req);
@@ -94,7 +96,7 @@ export class IngressService {
       payload,
       sessionId: instance.sessionScope,
     });
-    if (!isNew) return { status: 200, body: 'duplicate' }; // already persisted/acked
+    if (!isNew) return { status: 200, body: 'duplicate', headers: undefined }; // already persisted/acked
 
     // Best-effort conversation id for P1 ordering. Never throws — a malformed body just yields undefined.
     const providerConversationId = extractConversationId(route.conversationId, req.headers, req.rawBody);
@@ -111,7 +113,7 @@ export class IngressService {
       },
       deliveryId,
     );
-    return { status: 202, body: 'accepted' };
+    return route.ackResponse ?? { status: 202, body: 'accepted' };
   }
 }
 
