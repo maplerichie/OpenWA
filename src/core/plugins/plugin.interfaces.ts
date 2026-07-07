@@ -210,8 +210,8 @@ export interface PluginIngressRoute {
   // needs to understand the provider's schema beyond this one pointer.
   conversationId?: { header?: string; jsonPointer?: string };
   // Optional: the acknowledgment response format for async mode. The plugin declares what the provider
-  // expects (status, body, headers). Absent => defaults to 204 No Content. This fixes provider rejections
-  // due to incorrect content-type (previously hardcoded 202 text/html).
+  // expects (status, body, headers). Absent => defaults to 202 Accepted with body 'accepted'. Plugins
+  // whose providers reject text/html (e.g. Supabase) should declare their own ackResponse.
   ackResponse?: { status: number; body?: string; headers?: Record<string, string> };
 }
 
