@@ -571,4 +571,76 @@ describe('PluginLoaderService.dispatchWebhookForInstance config delivery', () =>
       expect.objectContaining({ config: { baseUrl: 'https://tenant1', accountId: 1 } }),
     );
   });
+
+  it('dispatchWebhookForInstanceSync returns the worker response and does not throw on failure', async () => {
+    const fakeInstanceService = { resolve: jest.fn().mockResolvedValue({ sessionScope: 'sess-1' }) };
+    const configService = { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService;
+    const pluginStorage = {
+      getPluginEntry: jest.fn().mockReturnValue(undefined),
+      setPluginEntry: jest.fn(),
+      getPluginConfig: jest.fn().mockReturnValue(null),
+      getPluginSessions: jest.fn().mockReturnValue(undefined),
+      getPluginSessionConfig: jest.fn().mockReturnValue(undefined),
+    } as unknown as PluginStorageService;
+    const moduleRef = { get: jest.fn().mockReturnValue(fakeInstanceService) } as unknown as ModuleRef;
+    const loader = new PluginLoaderService(configService, new HookManager(), pluginStorage, moduleRef);
+
+    const internals = loader as unknown as {
+      plugins: Map<string, unknown>;
+      sandboxHosts: Map<string, { dispatchWebhook: jest.Mock }>;
+    };
+    internals.plugins.set('chatwoot-adapter', {
+      manifest: { id: 'chatwoot-adapter', sessionScoped: true },
+      config: {},
+    });
+    const dispatchWebhook = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      body: '{"ok":true}',
+      headers: { 'content-type': 'application/json' },
+    });
+    internals.sandboxHosts.set('chatwoot-adapter', { dispatchWebhook });
+
+    const result = await loader.dispatchWebhookForInstanceSync({
+      pluginId: 'chatwoot-adapter',
+      instanceId: 'acct1',
+      route: 'chatwoot',
+      deliveryId: 'd1',
+      sessionId: 'sess-1',
+      payload: { headers: {}, query: {}, body: '', rawBody: '' },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      status: 201,
+      body: '{"ok":true}',
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+
+  it('dispatchWebhookForInstanceSync returns 502 when there is no live sandbox host', async () => {
+    const configService = { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService;
+    const pluginStorage = {
+      getPluginEntry: jest.fn().mockReturnValue(undefined),
+      setPluginEntry: jest.fn(),
+      getPluginConfig: jest.fn().mockReturnValue(null),
+      getPluginSessions: jest.fn().mockReturnValue(undefined),
+      getPluginSessionConfig: jest.fn().mockReturnValue(undefined),
+    } as unknown as PluginStorageService;
+    const moduleRef = { get: jest.fn() } as unknown as ModuleRef;
+    const loader = new PluginLoaderService(configService, new HookManager(), pluginStorage, moduleRef);
+
+    const result = await loader.dispatchWebhookForInstanceSync({
+      pluginId: 'chatwoot-adapter',
+      instanceId: 'acct1',
+      route: 'chatwoot',
+      deliveryId: 'd1',
+      sessionId: 'sess-1',
+      payload: { headers: {}, query: {}, body: '', rawBody: '' },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(502);
+    expect(result.error).toMatch(/no live sandbox host/);
+  });
 });

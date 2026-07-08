@@ -604,24 +604,51 @@ export class PluginLoaderService implements OnModuleInit, OnModuleDestroy {
    * failure (`!result.ok`, e.g. a 502/504/500) — either way BullMQ's retry/DLQ machinery takes over.
    */
   async dispatchWebhookForInstance(d: IngressJobData): Promise<void> {
+    const result = await this.dispatchWebhookRaw(d);
+    if (!result.ok) {
+      throw new Error(result.error ?? 'ingress dispatch failed with status ' + result.status);
+    }
+  }
+
+  /**
+   * Synchronous ingress dispatch for `sync-reply` routes. Returns the worker's response (including
+   * 5xx errors and timeouts) instead of throwing, so the HTTP pipeline can forward the exact status
+   * and body to the provider.
+   */
+  async dispatchWebhookForInstanceSync(
+    d: IngressJobData,
+  ): Promise<{ status: number; headers?: Record<string, string>; body?: string; ok: boolean; error?: string }> {
+    try {
+      return await this.dispatchWebhookRaw(d);
+    } catch (err) {
+      return { ok: false, status: 502, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  private async resolveInstanceConfig(
+    pluginId: string,
+    instanceId: string,
+  ): Promise<Record<string, unknown> | undefined> {
+    const plugin = this.plugins.get(pluginId);
+    if (!plugin) return undefined;
+    const instance = await this.getPluginInstanceService().resolve(pluginId, instanceId);
+    return resolvePluginConfig(
+      plugin.config,
+      plugin.sessionConfig,
+      instance?.sessionScope ?? undefined,
+      plugin.manifest.sessionScoped !== false,
+    );
+  }
+
+  private async dispatchWebhookRaw(
+    d: IngressJobData,
+  ): Promise<{ status: number; headers?: Record<string, string>; body?: string; ok: boolean; error?: string }> {
     const host = this.sandboxHosts.get(d.pluginId);
     if (!host) {
       throw new Error('no live sandbox host for plugin ' + d.pluginId);
     }
-    // Resolve this instance's per-session config (the base merged with the sessionScope override that
-    // provisioning wrote) so the ingress handler reads it as ctx.config — this is what makes a minted
-    // instance multi-tenant. Best-effort: an unresolved plugin just yields undefined (base config only).
-    const plugin = this.plugins.get(d.pluginId);
-    const instance = await this.getPluginInstanceService().resolve(d.pluginId, d.instanceId);
-    const config = plugin
-      ? resolvePluginConfig(
-          plugin.config,
-          plugin.sessionConfig,
-          instance?.sessionScope ?? undefined,
-          plugin.manifest.sessionScoped !== false,
-        )
-      : undefined;
-    const result = await host.dispatchWebhook({
+    const config = await this.resolveInstanceConfig(d.pluginId, d.instanceId);
+    return host.dispatchWebhook({
       instanceId: d.instanceId,
       route: d.route,
       method: 'POST',
@@ -635,9 +662,6 @@ export class PluginLoaderService implements OnModuleInit, OnModuleDestroy {
       config,
       timeoutMs: INGRESS_DISPATCH_TIMEOUT_MS,
     });
-    if (!result.ok) {
-      throw new Error(result.error ?? 'ingress dispatch failed with status ' + result.status);
-    }
   }
 
   /**

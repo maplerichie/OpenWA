@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Integration SDK v1 `sync-reply` ingress mode.** Inbound webhook routes can now declare
+  `mode: "sync-reply"` in their manifest. The host waits for the sandboxed plugin handler to return a
+  `WebhookResponse` and forwards its status, body, and headers to the provider, instead of always
+  fast-acking `202`. `mode: "async"` remains the default two-tier queue behavior. The
+  `supabase-otp-hook` example is updated to use `sync-reply` so it can report real OTP-send outcomes
+  (200 success, 400 client error, 401 bad signature, 502 downstream failure, 503 dead session, 504
+  timeout).
+
 ## [0.8.10] - 2026-07-07
 
 ### Added
@@ -25,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Indexed `webhooks.sessionId`.** The webhook dispatch path looks up a session's active webhooks by `sessionId` on every emitted event, so on a busy session this was a full table scan of the `webhooks` table per event (the foreign-key column carried no index). A cross-dialect index migration — plus the matching entity index — makes the lookup index-backed.
 - **Boot now rejects a non-canonical boolean feature flag instead of silently disabling the feature.** `QUEUE_ENABLED`, `MCP_ENABLED`, and `SERVE_DASHBOARD` are read with an exact `=== 'true'` / `!== 'false'` comparison, so a typo (`True`, `1`, `yes`) or a stray trailing space/CR (a Windows-edited env file forwarded verbatim by `docker run --env-file`) silently (dis)abled the feature with zero diagnostics. These are now validated at startup and boot fails fast naming the offending key. ⚠️ **Behavior change:** a deployment currently booting with such a value (e.g. `QUEUE_ENABLED=1`) will now refuse to start until corrected to `true`/`false`/unset — including `SERVE_DASHBOARD=0`/`no`, which was silently serving the dashboard and will now correctly disable it once set to `false`.
 - **A fatal uncaught exception is now written to the structured log** (with its stack and origin) before the process exits, instead of only a raw stack on stderr that the log pipeline missed. This is observe-only: the crash-and-restart posture is unchanged (the container restart policy still fires and the process never continues on corrupted post-exception state).
-- **`POST /infra/import-data` no longer swallows a genuine database error while clearing tables.** The table-clearing step tolerated only a genuinely-absent table but previously used a blanket catch, so an I/O/lock error (or an aborted transaction) could let a restore commit a *merged* rather than *replaced* dataset on SQLite. Such errors now surface and roll the whole import back (a real fault returns a `500` carrying the actual cause); the intended tolerance for a missing table is preserved.
+- **`POST /infra/import-data` no longer swallows a genuine database error while clearing tables.** The table-clearing step tolerated only a genuinely-absent table but previously used a blanket catch, so an I/O/lock error (or an aborted transaction) could let a restore commit a _merged_ rather than _replaced_ dataset on SQLite. Such errors now surface and roll the whole import back (a real fault returns a `500` carrying the actual cause); the intended tolerance for a missing table is preserved.
 - **A session no longer schedules a reconnect while the process is shutting down** — a disconnect during the drain window would otherwise launch a fresh Chromium racing the shutdown teardown. The session is left `DISCONNECTED` (a later start / auto-restore re-initializes it cleanly).
 - **Documentation & config accuracy.** `.env.example` now documents `PORT` (the port the app binds to on bare metal) distinctly from the Compose-only host-published `API_PORT`, and adds the `QUEUE_ENABLED`/`CACHE_ENABLED` toggles. `SECURITY.md`'s supported-versions table and the Java SDK install snippets are refreshed to the current releases. The unused `uuid`/`@types/uuid` dependency was removed, and stale "not yet wired" comments on the plugin ingress-manifest validation (which the loader has called since it shipped) were corrected.
 - **The bundled Docker Compose stack no longer kills Chromium mid-spawn under multi-session `whatsapp-web.js` workloads (#636).** The per-container `pids_limit` shipped at `512` since the `#243` hardening pass — a fork-bomb guard chosen without accounting for Chromium's multi-process model. `whatsapp-web.js` runs a full Chromium instance per session (browser + renderer + GPU + zygote + utilities), and WhatsApp Web is itself process-heavy, so ~4 concurrent sessions already approached 512 and the next session's Chromium was killed mid-spawn when `fork()` returned `EAGAIN` — surfacing in the API as a `Failed to launch the browser process: Code: null` launch failure with no useful log (the dbus/crashpad noise in the log is non-fatal). The default is now `2048` (fits ~8–10 sessions with startup-spike headroom), exposed as `OPENWA_PIDS_LIMIT` for larger fleets. The limit is a cgroup `pids.max` ceiling, not an allocation — raising it is a no-op for light containers, so this is safe for the `baileys` engine (single-process, no Chromium, a handful of PIDs regardless). The fork-bomb guard stays finite (`-1`/unlimited is explicitly discouraged). A new troubleshooting entry distinguishes the three causes of `Code: null` (PID exhaustion vs OOM-kill vs the XDG/crashpad crash already fixed earlier), since the cause isn't visible in the log without `docker stats` / `dmesg`.
@@ -71,7 +81,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.8.6] - 2026-07-03
 
 ### Fixed
-
 
 - **The `engine.getChatHistory` plugin capability (added in 0.8.5) now reaches sandboxed plugins.** It was wired only into the host-side context, not the plugin-worker bridge, so a sandboxed plugin's `ctx.engine.getChatHistory` was `undefined` and the call failed silently. It is now bridged through the worker capability + router like the other engine reads. Historical messages from the whatsapp-web.js engine also carry location coordinates and quoted-message references now, matching the live message path (previously a backfilled location rendered empty and replies lost their thread link). (#609)
 
@@ -478,7 +487,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Sessions (Baileys): when a session is logged out — unlinked from the phone or via the API — the now-invalid on-disk auth state is cleared, so re-linking shows a fresh QR instead of getting stuck silently reloading the dead credentials. (#453 — thanks @ulises2k)
-- Webhooks: registering a webhook (`POST /sessions/:id/webhooks`) to a host whose DNS lookup *rejects* (NXDOMAIN, or a transient `EAI_AGAIN`/`ESERVFAIL` under resolver pressure) now returns `400 Could not resolve host: <host> (<code>)` instead of a generic `500 Internal server error`. The SSRF guard's DNS deadline already mapped resolution *timeouts* and empty results to a 4xx; a rejected lookup leaked the raw DNS error, which surfaced as an intermittent 500 during back-to-back session-create → webhook-register flows.
+- Webhooks: registering a webhook (`POST /sessions/:id/webhooks`) to a host whose DNS lookup _rejects_ (NXDOMAIN, or a transient `EAI_AGAIN`/`ESERVFAIL` under resolver pressure) now returns `400 Could not resolve host: <host> (<code>)` instead of a generic `500 Internal server error`. The SSRF guard's DNS deadline already mapped resolution _timeouts_ and empty results to a 4xx; a rejected lookup leaked the raw DNS error, which surfaced as an intermittent 500 during back-to-back session-create → webhook-register flows.
 - Infrastructure: the dashboard config form no longer shows Server, Webhook, and Rate-Limit sections that were never persisted — they returned a fake "saved" while silently discarding every value. The form now exposes only the settings it actually writes (Database, Redis/Queue, Storage, Engine); the removed settings remain configurable via environment variables.
 - Infrastructure: data export/import (the documented backup and SQLite↔PostgreSQL migration flow) is now complete. It previously exported and restored only sessions, webhooks, messages, and message batches — so a restore silently lost all message templates and stored Baileys messages (cascade-deleted with the old sessions and never re-imported) and dropped every webhook's filters, causing a filtered webhook to come back firing on all events. Templates, stored Baileys messages, and webhook filters now round-trip intact.
 - Engine selection: pinning the engine from the environment works again after the v0.7.1 compose change. The bundled compose files forward `ENGINE_TYPE` into the container again (`- ENGINE_TYPE=${ENGINE_TYPE:-}`) and the app treats a blank value as unset, so an `.env`/host `ENGINE_TYPE=baileys` is honoured while the dashboard's Infrastructure > Engine selection still wins when no engine is pinned. `.env.example` no longer ships `ENGINE_TYPE` pre-pinned. **Upgrade note:** if you relied on `ENGINE_TYPE=baileys` in your `.env`, confirm the active engine after upgrading. (#453 — thanks @ulises2k)
@@ -661,7 +670,7 @@ path (browser-flag parsing + `0600` secret file), and cleaner fresh-install sche
 
 - **The contact, group, and chat list endpoints are now paginated (default cap 1000).** ⚠️ Behavior
   change. `GET /sessions/:id/contacts`, `/groups`, and `/chats` previously serialized the operator's
-  *entire* address book / group / chat set into one response — a heap/GC hazard for very large
+  _entire_ address book / group / chat set into one response — a heap/GC hazard for very large
   accounts. They now accept optional `limit` (clamped `[1, 1000]`) and `offset` query params, and
   default to returning at most **1000** items when no `limit` is given. Accounts under 1000 items are
   unaffected; larger accounts page with `offset`. Chats are returned **most-recent first**, so a
@@ -836,7 +845,7 @@ longer floods the screen with error toasts.
 
 A reliability, correctness, and dashboard release. **Identity & engine:** Baileys gains a persistent,
 cross-session `lid -> phone` table (shared resolution that survives restarts) plus a new `from` message
-filter, and its contact/chat *listing* ids are now engine-neutral (`@c.us`). **Webhooks:** message
+filter, and its contact/chat _listing_ ids are now engine-neutral (`@c.us`). **Webhooks:** message
 reactions now also fire as a `message.reaction` webhook (previously WebSocket-only). **Dashboard:**
 selectable appearance palettes with light/dark/system mode, and a redesigned Templates workspace.
 **Hardening:** the LibreTranslate client pins its outbound connection, and Baileys group-participant
@@ -889,7 +898,7 @@ webhooks subscribed with `*` now also receive `message.reaction`.
   addressed by a raw engine id), so the conversation view is no longer empty when the stored and queried
   dialects differ - the same resolution the `from` filter uses. (#375)
 
-- **Baileys engine: contact and chat *listing* ids are now engine-neutral (`@c.us`).** `getContacts` /
+- **Baileys engine: contact and chat _listing_ ids are now engine-neutral (`@c.us`).** `getContacts` /
   `getChats` / `getContactById` previously returned the raw `<phone>@s.whatsapp.net` id (visible in the
   dashboard, and mismatched against the `@c.us` chatId stored on messages). They now emit the neutral
   `@c.us` dialect like the message payloads; the read-back paths (`sendSeen` / `deleteChat` / contact
@@ -1049,8 +1058,8 @@ of silently falling back to the default.
   the queue dashboard (Bull Board) auth uses the same trusted-proxy IP model as the API; the production
   secret-guard inspects the canonical S3 variables. (#345)
 - **Storage import/key hardening.** A `tar.gz` import is bounded against decompression bombs (per-entry byte cap
-  + entry-count cap); storage-key containment is enforced at the backend-agnostic boundary so the S3 path
-  inherits it; a plugin's `ctx.storage` is sandbox-contained against `..` traversal. (#346)
+  - entry-count cap); storage-key containment is enforced at the backend-agnostic boundary so the S3 path
+    inherits it; a plugin's `ctx.storage` is sandbox-contained against `..` traversal. (#346)
 
 ### Fixed
 
@@ -1207,7 +1216,7 @@ application-code changes.
   monitoring, and any external reverse-proxy config accordingly. (#275)
 - The `with-dashboard` and `with-proxy` compose profiles are removed, and the `DASHBOARD_PORT`,
   `PROXY_ENABLED`, and `DASHBOARD_ENABLED` env vars are gone (silently ignored if still set). `--profile
-  full` now starts the optional datastores (postgres, redis, minio). If you relied on the bundled Traefik
+full` now starts the optional datastores (postgres, redis, minio). If you relied on the bundled Traefik
   for TLS, front the API with your own reverse proxy. (#275, #276)
 
 ## [0.3.0] - 2026-06-18
@@ -1467,7 +1476,7 @@ Login language selector legible in dark mode.
 ### Fixed
 
 - Chromium no longer hard-crashes at launch (`Trace/breakpoint trap` / `chrome_crashpad_handler:
-  --database is required`) on hardened `read_only` containers. Chromium resolves its home dir from the
+--database is required`) on hardened `read_only` containers. Chromium resolves its home dir from the
   passwd entry and ignores `$HOME`, so the home-less `openwa` user pointed it at a nonexistent
   `/home/openwa`. It is now given writable, pre-created `XDG_CONFIG_HOME`/`XDG_CACHE_HOME` dirs (created
   by the entrypoint, owned by `openwa`). This supersedes the ineffective `--crash-dumps-dir` approach

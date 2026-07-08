@@ -27,6 +27,14 @@ export interface ResolvedInstance {
 // dedupHeader lives under `signature`; the resolver may lift it, so read both (top level wins).
 export type IngressRouteDescriptor = PluginIngressRoute & { dedupHeader?: string };
 
+export type SyncDispatchResult = {
+  status: number;
+  headers?: Record<string, string>;
+  body?: string;
+  ok: boolean;
+  error?: string;
+};
+
 export interface IngressDeps {
   instances: { resolve(pluginId: string, instanceId: string): Promise<ResolvedInstance | null> };
   manifestRoute: (pluginId: string, route: string) => IngressRouteDescriptor | undefined;
@@ -43,18 +51,22 @@ export interface IngressDeps {
   // Returns an enqueue outcome (queued/dispatched/failed); handle() ignores it — only durability
   // follow-up paths like redrive act on it. Typed as unknown here to keep this pure module decoupled.
   enqueue: (data: IngressJobData, jobId: string) => Promise<unknown>;
+  // Synchronous dispatch for `sync-reply` routes. Returns the worker's response so the HTTP pipeline
+  // can forward it directly to the provider.
+  dispatchSync: (data: IngressJobData) => Promise<SyncDispatchResult>;
   now: () => number;
 }
 
 /**
- * The fast-ack ingress pipeline. Pure orchestration over injected deps so it is unit-testable without
- * Nest DI: resolve the instance → answer a GET challenge host-side → size cap → verify over the RAW
- * body → dedup (persist-before-ack) → best-effort conversation id → enqueue (or inline) → 202.
+ * The ingress pipeline. Pure orchestration over injected deps so it is unit-testable without Nest DI:
+ * resolve the instance → answer a GET challenge host-side → size cap → verify over the RAW body →
+ * dedup (persist-before-ack) → best-effort conversation id → enqueue (async) or dispatch inline
+ * and return the plugin's response (sync-reply).
  */
 export class IngressService {
   constructor(private readonly deps: IngressDeps) {}
 
-  async handle(req: IngressRequest): Promise<{ status: number; body?: string }> {
+  async handle(req: IngressRequest): Promise<{ status: number; headers?: Record<string, string>; body?: string }> {
     const instance = await this.deps.instances.resolve(req.pluginId, req.instanceId);
     if (!instance || !instance.enabled) return { status: 404, body: 'unknown instance' };
 
@@ -99,18 +111,27 @@ export class IngressService {
     // Best-effort conversation id for P1 ordering. Never throws — a malformed body just yields undefined.
     const providerConversationId = extractConversationId(route.conversationId, req.headers, req.rawBody);
 
-    await this.deps.enqueue(
-      {
-        pluginId: req.pluginId,
-        instanceId: req.instanceId,
-        route: req.route,
-        deliveryId,
-        sessionId: instance.sessionScope ?? undefined,
-        providerConversationId,
-        payload,
-      },
+    const jobData: IngressJobData = {
+      pluginId: req.pluginId,
+      instanceId: req.instanceId,
+      route: req.route,
       deliveryId,
-    );
+      sessionId: instance.sessionScope ?? undefined,
+      providerConversationId,
+      payload,
+    };
+
+    if (route.mode === 'sync-reply') {
+      let result: SyncDispatchResult;
+      try {
+        result = await this.deps.dispatchSync(jobData);
+      } catch (err) {
+        result = { ok: false, status: 502, error: err instanceof Error ? err.message : String(err) };
+      }
+      return { status: result.status, headers: result.headers, body: result.body ?? result.error ?? '' };
+    }
+
+    await this.deps.enqueue(jobData, deliveryId);
     return { status: 202, body: 'accepted' };
   }
 }

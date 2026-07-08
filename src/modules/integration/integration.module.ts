@@ -43,6 +43,7 @@ import { PluginLoaderService } from '../../core/plugins/plugin-loader.service';
             loader.getPlugin(pluginId)?.manifest.ingress?.find(r => r.route === route),
           events: { recordOrSkip: input => events.recordOrSkip(input) },
           enqueue: (data, jobId) => ingressEnqueue.enqueue(data, jobId),
+          dispatchSync: data => loader.dispatchWebhookForInstanceSync(data),
           now: () => Date.now(),
         });
       },

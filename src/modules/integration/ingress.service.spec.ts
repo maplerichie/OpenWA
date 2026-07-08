@@ -23,6 +23,7 @@ function deps(overrides: Record<string, unknown> = {}) {
     }),
     events: { recordOrSkip: jest.fn().mockResolvedValue(true) },
     enqueue: jest.fn().mockResolvedValue(undefined),
+    dispatchSync: jest.fn().mockResolvedValue({ status: 200, ok: true }),
     now: () => 0,
     ...overrides,
   };
@@ -249,6 +250,94 @@ describe('IngressService.handle', () => {
     const d3 = deps();
     await new IngressService(d3).handle({ ...req, headers: {}, rawBody: '{"a":1}' });
     expect((d3.enqueue.mock.calls[0] as [unknown, string])[1]).not.toBe(jobId);
+  });
+});
+
+describe('IngressService.handle — sync-reply mode', () => {
+  const syncReq = {
+    pluginId: 'supabase-otp-hook',
+    instanceId: 'i1',
+    route: 'send-sms',
+    method: 'POST',
+    headers: { 'webhook-id': 'd1' },
+    query: {},
+    rawBody: '{}',
+  };
+
+  function syncDeps(overrides: Record<string, unknown> = {}) {
+    return deps({
+      manifestRoute: jest.fn().mockReturnValue({
+        route: 'send-sms',
+        mode: 'sync-reply',
+        verify: 'core',
+        maxBodyBytes: 20480,
+        signature: { scheme: 'none', dedupHeader: 'webhook-id' },
+      }),
+      ...overrides,
+    });
+  }
+
+  it('forwards the worker response status, body, and headers', async () => {
+    const d = syncDeps({
+      dispatchSync: jest.fn().mockResolvedValue({
+        status: 201,
+        body: '{"ok":true}',
+        headers: { 'content-type': 'application/json' },
+        ok: true,
+      }),
+    });
+    const svc = new IngressService(d);
+    const res = await svc.handle(syncReq);
+
+    expect(d.events.recordOrSkip).toHaveBeenCalled();
+    expect(d.enqueue).not.toHaveBeenCalled();
+    expect(d.dispatchSync).toHaveBeenCalledWith(
+      expect.objectContaining({ pluginId: 'supabase-otp-hook', instanceId: 'i1', route: 'send-sms' }),
+    );
+    expect(res.status).toBe(201);
+    expect(res.body).toBe('{"ok":true}');
+    expect(res.headers).toEqual({ 'content-type': 'application/json' });
+  });
+
+  it('does not enqueue in sync-reply mode', async () => {
+    const d = syncDeps();
+    const svc = new IngressService(d);
+    await svc.handle(syncReq);
+    expect(d.enqueue).not.toHaveBeenCalled();
+    expect(d.dispatchSync).toHaveBeenCalled();
+  });
+
+  it('short-circuits a duplicate delivery with 200 before dispatchSync', async () => {
+    const d = syncDeps({ events: { recordOrSkip: jest.fn().mockResolvedValue(false) } });
+    const svc = new IngressService(d);
+    const res = await svc.handle(syncReq);
+    expect(d.dispatchSync).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+  });
+
+  it('returns the worker error status and body when the handler reports failure', async () => {
+    const d = syncDeps({
+      dispatchSync: jest.fn().mockResolvedValue({
+        status: 500,
+        body: 'signature verification failed',
+        ok: false,
+        error: 'signature verification failed',
+      }),
+    });
+    const svc = new IngressService(d);
+    const res = await svc.handle(syncReq);
+    expect(res.status).toBe(500);
+    expect(res.body).toBe('signature verification failed');
+  });
+
+  it('returns 502 when dispatchSync throws (no live worker)', async () => {
+    const d = syncDeps({
+      dispatchSync: jest.fn().mockRejectedValue(new Error('no live sandbox host')),
+    });
+    const svc = new IngressService(d);
+    const res = await svc.handle(syncReq);
+    expect(res.status).toBe(502);
+    expect(res.body).toBe('no live sandbox host');
   });
 });
 

@@ -79,6 +79,7 @@ describe('Integration SDK v1 golden contract — Chatwoot message_created', () =
         dispatched.push(jobId);
         return Promise.resolve();
       },
+      dispatchSync: () => Promise.resolve({ status: 200, ok: true }),
       now: () => ts * 1000,
     };
     const svc = new IngressService(deps);
@@ -112,6 +113,7 @@ describe('Integration SDK v1 golden contract — Chatwoot message_created', () =
         dispatched.push(jobId);
         return Promise.resolve();
       },
+      dispatchSync: () => Promise.resolve({ status: 200, ok: true }),
       now: () => ts * 1000,
     };
     const svc = new IngressService(deps);
@@ -145,6 +147,7 @@ describe('Integration SDK v1 golden contract — Chatwoot message_created', () =
         dispatched.push(jobId);
         return Promise.resolve();
       },
+      dispatchSync: () => Promise.resolve({ status: 200, ok: true }),
       now: () => ts * 1000,
     };
     const svc = new IngressService(deps);

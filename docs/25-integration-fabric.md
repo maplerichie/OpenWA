@@ -1,7 +1,7 @@
 # 25 - Integration Fabric
 
 > **Status:** P0 substrate merged as an internal foundation. This document describes the architecture and
-> the design rationale — *why* it is built this way — not a how-to or an API reference. The public SDK
+> the design rationale — _why_ it is built this way — not a how-to or an API reference. The public SDK
 > reference and the first ready-to-use adapter arrive in later phases (see
 > [15 - Project Roadmap](./15-project-roadmap.md)).
 
@@ -26,7 +26,7 @@ public contract — Integration SDK v1** — because the contract, not any singl
 
 ## 25.2 Design principle: one new primitive, everything else a clone
 
-The overriding goal is to preserve the untrusted-worker safety invariants *by construction*. OpenWA
+The overriding goal is to preserve the untrusted-worker safety invariants _by construction_. OpenWA
 plugins run in a capability-gated worker thread with no ambient host access (see
 [23 - Plugin Sandboxing](./23-plugin-sandboxing.md)). Every host↔worker message is a serializable POJO
 across a `structuredClone` boundary; host-initiated calls fail open on a timeout and drain on a worker
@@ -36,15 +36,15 @@ host-side.
 Rather than invent new machinery that would have to re-earn those properties, the Integration Fabric is
 **~90% a faithful clone of seams OpenWA already ships**:
 
-| Concern | Cloned from |
-| ------- | ----------- |
-| Host→worker dispatch with fail-open timeout + crash-drain | the existing hook bridge |
-| Worker→host capability calls | the existing capability router |
-| Durable delivery with retry + dead-letter | the outbound webhook queue and DLQ |
-| Identity mapping table (no foreign key, last-write-wins) | the LID↔phone mapping table |
-| Inbound deduplication (insert-or-skip on a unique key) | the inbound-message dedup oracle |
-| SSRF-guarded egress | `ctx.net.fetch` (reused verbatim) |
-| Secret masking on read | the plugin config redaction utility |
+| Concern                                                   | Cloned from                         |
+| --------------------------------------------------------- | ----------------------------------- |
+| Host→worker dispatch with fail-open timeout + crash-drain | the existing hook bridge            |
+| Worker→host capability calls                              | the existing capability router      |
+| Durable delivery with retry + dead-letter                 | the outbound webhook queue and DLQ  |
+| Identity mapping table (no foreign key, last-write-wins)  | the LID↔phone mapping table         |
+| Inbound deduplication (insert-or-skip on a unique key)    | the inbound-message dedup oracle    |
+| SSRF-guarded egress                                       | `ctx.net.fetch` (reused verbatim)   |
+| Secret masking on read                                    | the plugin config redaction utility |
 
 Exactly **one** genuinely new primitive exists: a host→worker RPC that returns an **HTTP status + body**
 from a sandboxed worker — inbound webhook ingress. It is modelled line-for-line on the hook bridge so its
@@ -60,13 +60,14 @@ flowchart LR
     Provider[External provider] -- POST /api/ingress/:plugin/:instance/:route --> Core
 
     subgraph Core["OpenWA host (core)"]
-        Ingress[Ingress controller<br/>verify → dedup → persist → enqueue]
+        Ingress[Ingress controller<br/>verify → dedup → persist]
         Queue[(ingress-queue<br/>BullMQ / Redis)]
         Processor[Ingress processor]
         RPC[Webhook RPC → worker]
         Cap[conversation.send capability]
         Tables[(mappings · dedup · instances · DLQ)]
-        Ingress --> Queue --> Processor --> RPC
+        Ingress -- async --> Queue --> Processor --> RPC
+        Ingress -- sync-reply --> RPC
     end
 
     subgraph Plugin["Sandboxed adapter plugin"]
@@ -79,10 +80,17 @@ flowchart LR
     Ingress -. reuses .-> Tables
 ```
 
-The topology is intentionally two-tier (an n8n-style queue mode): an **ingress tier** (the public
-controller: authenticate → normalize → persist → enqueue → fast `202`) decoupled by a durable queue from
-a **dispatch tier** (the processor that runs the plugin). A provider spike, a slow adapter, or a wedged
-plugin never loses events; the tiers scale independently with backpressure.
+The topology supports two delivery modes, selected per route in the manifest:
+
+- **`async`** — two-tier queue mode: the public controller authenticates, normalizes, persists, and
+  immediately fast-acks `202`; a durable queue decouples the **dispatch tier** (the processor that runs
+  the plugin). Provider spikes, slow adapters, or wedged plugins never lose events; the tiers scale
+  independently with backpressure.
+- **`sync-reply`** — the controller dispatches the plugin inline and returns its response status, body,
+  and headers directly to the provider. This mode trades queue durability for correctness when the
+  external system needs the actual outcome (e.g. Supabase Auth OTP hooks that must report success or
+  retry). Dedup and persist-before-dispatch still apply, but no DLQ retry is performed; the provider's
+  own retry policy is responsible for redelivery.
 
 ## 25.4 Core components
 
@@ -90,8 +98,10 @@ plugin never loses events; the tiers scale independently with backpressure.
   its HTTP result. The worker claims routes with `ctx.registerWebhook(route, handler)`.
 - **Ingress controller** — a `@Public` endpoint (`POST|GET /api/ingress/:pluginId/:instanceId/:route`).
   It is public to the API-key guard because an external provider cannot present the gateway's API key, so
-  it self-validates (see §25.6). It never runs the plugin inline — providers enforce short acknowledgement
-  deadlines, so the controller fast-acks and defers the work to the queue.
+  it self-validates (see §25.6). In `async` mode it never runs the plugin inline — providers enforce short
+  acknowledgement deadlines, so it fast-acks `202` and defers work to the queue. In `sync-reply` mode it
+  dispatches the plugin inline and forwards the worker's response status, body, and headers to the
+  provider (falling back to `502`/`504` on worker crash or timeout).
 - **Plugin instance** — a first-class `instanceId` namespaced under a `pluginId`. One adapter can back
   many instances (for example, one external account per WhatsApp number). Each instance owns a host-minted
   ingress secret, a resolved session scope, and a config slice. It is a serializable field threaded
@@ -100,7 +110,7 @@ plugin never loses events; the tiers scale independently with backpressure.
   host-side to the message service, so persistence and the message hook chain are preserved. It is gated
   by a `conversation:send` permission and the instance's session scope.
 - **Identity, dedup, and DLQ tables** — see §25.5.
-- **Ingress queue** — a durable BullMQ queue that is a *sibling* of the outbound webhook queue (its own
+- **Ingress queue** — a durable BullMQ queue that is a _sibling_ of the outbound webhook queue (its own
   worker, not the reordering webhook worker), with exponential-backoff retries and a dead-letter row on
   the final attempt.
 
@@ -139,7 +149,7 @@ Four tables live on the data connection, each created by a hand-authored dual-di
   manifest.
 - **Egress.** The only outbound path remains the existing SSRF-guarded `ctx.net.fetch`, scoped to the
   manifest's allowed hosts.
-- **Re-entrancy.** A reply issued *inside* an ingress handler seeds the in-flight hook set, so an adapter's
+- **Re-entrancy.** A reply issued _inside_ an ingress handler seeds the in-flight hook set, so an adapter's
   own outbound message hook cannot echo-loop the reply back out to the external system.
 
 ## 25.7 Scale and durability
@@ -155,12 +165,13 @@ existing outbound webhook fallback.
 ## 25.8 The Integration SDK (v1)
 
 The stable surface untrusted adapters consume. A plugin declares `sdkVersion: "1"` and an `ingress`
-descriptor (the route, its signature scheme, replay tolerance, dedup header, and an optional verification
-handshake) in its manifest, and requests the `webhook:ingress` and `conversation:send` permissions. The
-host refuses to route ingress to a plugin whose declared **major** differs from the host's supported
-major, and the surface is **additive-only** within a major. The worker-facing API centres on
-`ctx.registerWebhook(...)` (claim an inbound route), `ctx.conversations.send(...)` (normalized reply), and
-per-instance mapping and handover helpers.
+descriptor (the route, its `mode` — `async` or `sync-reply` — signature scheme, replay tolerance, dedup
+header, and an optional verification handshake) in its manifest, and requests the `webhook:ingress` and
+`conversation:send` permissions. The host refuses to route ingress to a plugin whose declared **major**
+differs from the host's supported major, and the surface is **additive-only** within a major. The
+worker-facing API centres on `ctx.registerWebhook(...)` (claim an inbound route and return a
+`WebhookResponse`), `ctx.conversations.send(...)` (normalized reply), and per-instance mapping and
+handover helpers.
 
 The full SDK reference — every manifest field, the envelope schema, the lifecycle, and the golden
 compatibility fixtures — is published alongside the first adapter, so it documents a contract that can
